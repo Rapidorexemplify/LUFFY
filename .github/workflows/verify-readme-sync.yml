@@ -1,0 +1,45 @@
+name: Verify README sync
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify TODO section
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path('README.md').read_text(encoding='utf-8')
+          title = '### \U0001f4dd Complete TODO List'
+          print('TITLE_COUNT', text.count(title))
+          lines = text.splitlines()
+          items = []
+          malformed = []
+          for i, line in enumerate(lines, 1):
+              if line.startswith('- [ ] **'):
+                  m = re.match(r'^- \[ \] \*\*(.+?):(\d+)\*\* - (.*)$', line)
+                  if not m:
+                      malformed.append((i, line[:180]))
+                  else:
+                      items.append((m.group(1), int(m.group(2))))
+          print('ITEM_COUNT', len(items))
+          print('MALFORMED', len(malformed))
+          for bad in malformed[:5]:
+              print('BAD', bad)
+          keys = [(p, n) for p, n in items]
+          print('SORTED', keys == sorted(keys))
+          for path in ('luffy/deepscaler/utils.py', 'luffy/verl/verl/protocol.py'):
+              print('GROUP', path)
+              for p, n in keys:
+                  if p == path:
+                      print(n)
+          print('SECTION_HEADINGS', [ln for ln in lines if ln.startswith('## ')][:4])
+          print('LAST_ITEM', items[-1] if items else None)
+          print('BLANK_AFTER_TITLE', lines[lines.index(title)] == title)
+          print('TITLE_INDEX', lines.index(title))
+          PY
