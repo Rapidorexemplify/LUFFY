@@ -1,0 +1,132 @@
+name: Fix TODO README
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch main
+        run: git fetch origin main:main
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Restore baseline README and apply precise TODO updates
+        run: |
+          git show main:README.md > README.md
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import subprocess
+
+          repo = pathlib.Path.cwd()
+          readme_path = repo / "README.md"
+          readme = readme_path.read_text(encoding="utf-8")
+
+          start_marker = "### 📝 Complete TODO List\n"
+          start = readme.index(start_marker) + len(start_marker)
+          end = readme.index("\n## ", start)
+          section = readme[start:end]
+
+          entry_re = re.compile(
+              r"^- \[ \] \*\*(?P<path>[^:]+):(?P<line>\d+)\*\* - (?P<text>.*)$",
+              re.MULTILINE,
+          )
+          entries = [
+              {
+                  "path": m.group("path"),
+                  "line": int(m.group("line")),
+                  "text": m.group("text"),
+                  "remove": False,
+              }
+              for m in entry_re.finditer(section)
+          ]
+
+          def run_git(*args):
+              return subprocess.check_output(["git", *args], text=True, cwd=repo)
+
+          changed = [
+              p
+              for p in run_git("diff", "--name-only", "main...dev").splitlines()
+              if p.endswith(".py")
+          ]
+          print("Changed Python files:", changed)
+
+          def parse_todos(text):
+              todos = []
+              for i, line in enumerate(text.splitlines(), 1):
+                  m = re.search(r"#\s*TODO\b(.*)", line)
+                  if not m:
+                      continue
+                  rest = m.group(1)
+                  if rest.startswith(":"):
+                      rest = rest[1:]
+                  todos.append((i, rest.strip()))
+              return todos
+
+          for path in changed:
+              try:
+                  main_text = run_git("show", f"main:{path}")
+              except subprocess.CalledProcessError:
+                  main_text = ""
+              dev_text = run_git("show", f"dev:{path}")
+
+              main_todos = parse_todos(main_text)
+              dev_todos = parse_todos(dev_text)
+              print(f"{path}: main={len(main_todos)} dev={len(dev_todos)}")
+
+              dev_remaining = list(dev_todos)
+              for entry in entries:
+                  if entry["path"] != path:
+                      continue
+                  for idx, (line, text) in enumerate(dev_remaining):
+                      if text == entry["text"]:
+                          entry["line"] = line
+                          del dev_remaining[idx]
+                          break
+                  else:
+                      entry["remove"] = True
+
+              main_texts = {text for _, text in main_todos}
+              for line, text in dev_todos:
+                  if text not in main_texts:
+                      entries.append(
+                          {"path": path, "line": line, "text": text, "remove": False}
+                      )
+
+          entries = [e for e in entries if not e["remove"]]
+          entries.sort(key=lambda e: (e["path"], e["line"]))
+
+          new_section = "\n" + "\n".join(
+              f"- [ ] **{e['path']}:{e['line']}** - {e['text']}" for e in entries
+          ) + "\n"
+          new_readme = readme[:start] + new_section + readme[end:]
+          readme_path.write_text(new_readme, encoding="utf-8")
+          print(f"Updated README with {len(entries)} TODO entries")
+          PY
+
+      - name: Commit README
+        run: |
+          git add README.md
+          if git diff --cached --quiet; then
+            echo "No README changes"
+          else
+            git commit -m "docs: update TODO list after dev implementation"
+            git push origin HEAD:dev
+          fi
+
+      - name: Delete temporary branch
+        run: git push origin --delete tmp/update-todo-readme || true
